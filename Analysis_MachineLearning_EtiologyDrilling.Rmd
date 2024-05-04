@@ -1,0 +1,411 @@
+---
+title: "Analysis and Machine Learning - Illness Drilling"
+author: "Janessa Davis - University of Arizona"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r, include=FALSE}
+# pulling in the datasets 
+library(tidyverse)
+library(lubridate)
+library(dbscan)
+library(factoextra)
+library(glmnet)
+library(zoo)
+cdc <- read_csv('cdcnors_midwest_2001-2021.csv')
+illinois <- read_csv('illinois_weather.csv')
+iowa <- read_csv('iowa_weather.csv')
+wisconsin <- read_csv('wisconsin_weather.csv')
+```
+
+```{r Cleaning and Prepping the Data for Plotting and Merging, include=FALSE}
+# taking a look at the data 
+head(cdc)
+head(illinois)
+head(iowa)
+head(wisconsin)
+# making the heads lowercase for easier coding 
+colnames(illinois) <- tolower(colnames(illinois))
+colnames(iowa) <- tolower(colnames(iowa))
+colnames(wisconsin) <- tolower(colnames(wisconsin))
+
+# splitting the date into individual columns so that the data can be round up on a monthly and yearly basis 
+illinois <- illinois |> 
+  mutate(lubridate::year(date), lubridate::month(date), lubridate::day(date))
+
+iowa <- iowa |> 
+  mutate(lubridate::year(date), lubridate::month(date), lubridate::day(date))
+
+wisconsin <- wisconsin |> 
+  mutate(lubridate::year(date), lubridate::month(date), lubridate::day(date))
+
+colnames(illinois)[8:10] <- c('year', 'month', 'week')
+colnames(iowa)[8:10] <- c('year', 'month', 'week')
+colnames(wisconsin)[8:10] <- c('year', 'month', 'week')
+
+# dropping the original date column 
+iowa <- iowa[,-1]; illinois <- illinois[, -1]; wisconsin <- wisconsin[, -1]
+# reordering the columns 
+illinois <- illinois[,c(7:9,1:6)]; iowa <- iowa[,c(7:9,1:6)]; wisconsin <- wisconsin[,c(7:9,1:6)]
+# dropping the week number column 
+illinois <- illinois[, -3]; iowa <- iowa[, -3]; wisconsin <- wisconsin[, -3]
+
+# adding a column for the state to be combined with the CDC data 
+wisconsin_state <- rep('Wisconsin', nrow(wisconsin))
+illinois_state <- rep('Illinois', nrow(illinois))
+iowa_state <- rep('Iowa', nrow(iowa))
+
+wisconsin$state <- wisconsin_state
+illinois$state <- illinois_state
+iowa$state <- iowa_state
+
+colnames(illinois) <- c('year', 'month', 'tavg', 'tmax', 'tmin', 'prcp', 'snow', 'snwdepth', 'state')
+colnames(iowa) <- c('year', 'month', 'tavg', 'tmax', 'tmin', 'prcp', 'snow', 'snwdepth', 'state')
+colnames(wisconsin) <- c('year', 'month', 'tavg', 'tmax', 'tmin', 'prcp', 'snow', 'snwdepth', 'state')
+
+
+# all weather data 
+weather <- rbind(illinois, wisconsin, iowa)
+glimpse(weather)
+
+# adding a lag variable for the weather 
+weather <- weather |> 
+  mutate(lagged.tavg = lag(tavg, 1), 
+         lagged.tmax = lag(tmax, 1), 
+         lagged.tmin = lag(tmin, 1),
+         lagged.prcp = lag(prcp, 1), 
+         lagged.snow = lag(snow, 1),
+         lagged.sdepth = lag(snwdepth, 1))
+weather[1, 10:15] <- 0
+head(weather)
+
+# doing a merge of the full dataset 
+total.illnesses <- cdc |> 
+  group_by(year, month, state) |> 
+  summarise(total.illnesses = sum(illnesses)) 
+avg.weather <- weather |> 
+  group_by(year, month, state) |> 
+  summarise(avg.meantemp = mean(tavg),
+            avg.maxtemp = mean(tmax),
+            avg.mintemp = mean(tmin),
+            avg.prcp = mean(prcp),
+            avg.snow = mean(snow),
+            avg.snowdepth = mean(snwdepth), 
+            avg.lagmeantemp = mean(lagged.tavg),
+            avg.lagmintemp = mean(lagged.tmin),
+            avg.lagmaxtemp = mean(lagged.tmax), 
+            avg.lagprcp = mean(lagged.prcp), 
+            avg.lagsnow = mean(lagged.snow),
+            avg.lagsdepth = mean(lagged.sdepth))
+avg.weather
+# joining the two dataset together 
+cdc.weather <- total.illnesses |> full_join(avg.weather, by = c('year' = 'year',
+                                                 'month' = 'month',
+                                                 'state' = 'state'))
+head(cdc.weather)
+
+
+```
+
+```{r}
+# running LASSO regression on the entire dataset without a prior drill down 
+# performing LASSO regression to determine which weather variables are possibly significant 
+# filtering the data down to remove and handle NAs before perfomring LASSO regression 
+set.seed(1)
+cdc.filter <- cdc.weather |> filter(!is.na(total.illnesses))
+# filling in the missing average temperature 
+for (i in 1:nrow(cdc.filter)) { 
+  if (is.na(cdc.filter$avg.meantemp[i]) == T) { 
+    cdc.filter$avg.meantemp[i] = mean(cdc.filter$avg.maxtemp[i], cdc.filter$avg.mintemp[i])}
+  if (is.na(cdc.filter$avg.lagmeantemp[i]) == T) { 
+    cdc.filter$avg.lagmeantemp[i] = mean(cdc.filter$avg.lagmaxtemp[i], cdc.filter$avg.lagmintemp[i])}
+  if (is.na(cdc.filter$avg.snow[i]) == T) { 
+    cdc.filter$avg.snow[i] <- 0}
+  if (is.na(cdc.filter$avg.lagsnow[i]) == T) { 
+    cdc.filter$avg.lagsnow[i] <- 0}
+  if (is.na(cdc.filter$avg.snowdepth[i]) == T) {
+    cdc.filter$avg.snowdepth[i] <- 0}
+  if (is.na(cdc.filter$avg.lagsdepth[i]) == T) {
+    cdc.filter$avg.lagsdepth[i] <- 0}
+}
+
+write.csv(cdc.filter, 'cdc_weather.csv')
+
+# creating the training and test sets 
+test <- sample(1:nrow(cdc.filter), nrow(cdc.filter)/4) # taking a 1/4 of the data out for testing the model 
+train <- (-test)
+cdc.train.x <- as.matrix(cdc.filter[train, -4])
+cdc.train.y <- as.matrix(cdc.filter[train, 'total.illnesses'])
+cdc.test.x <- as.matrix(cdc.filter[test, -4])
+cdc.test.y <- as.matrix(cdc.filter[test, 'total.illnesses'])
+
+# applying the LASSO model to see which variables are significant 
+cdc.lasso.mod <- glmnet(cdc.train.x, cdc.train.y, alpha = 1)
+plot(cdc.lasso.mod)
+# performing cross validation to compute test error and to perform variable selection 
+cdc.cv <- cv.glmnet(cdc.train.x, cdc.train.y, alpha = 1)
+plot(cdc.cv)
+# getting the lambda value with the lowest MSE 
+bestlam.cdc <- cdc.cv$lambda.min
+cdc.lasso.pred <- predict(cdc.lasso.mod, s = bestlam.cdc, newx = cdc.test.x)
+mean((cdc.lasso.pred - cdc.test.y)^2)
+# looking at the LASSO coefficients to find the values coefficient values are 0 and thus not siginificant to the model prediction 
+# fitting the LASSO regression using the best lambda value to determine variable selection 
+cdc.filter <- as.matrix(cdc.filter)
+full.cdc.lasso.mod <- glmnet(cdc.filter[,-4], cdc.filter[, 4], alpha = 1)
+cdc.lasso.coef <- predict(full.cdc.lasso.mod, type = 'coefficients', s = bestlam.cdc)
+cdc.lasso.coef
+cdc.lasso.coef[cdc.lasso.coef != 0]
+
+```
+Based on LASSO regression, significant variables for predicting the number of outbreaks/illnesses recorded are _year, month, mean temperature, max temperature, precipitation, snow, snow depth, and all the lag variables for the weather predictors_. 
+
+
+```{r}
+# seeing which bacteria have the most outbreaks 
+cdc |> group_by(etiology) |> summarise(tot.illnesess = sum(illnesses)) |> arrange(desc(tot.illnesess))
+# the top etiologies that appear at salmonella, clostridium, shigella, cryptosporidium, and e.coli
+
+# creating a weather dataframe for salmonella 
+salmonella.illnesses <- cdc |> 
+  filter(etiology == 'salmonella') |>
+  group_by(year, month, state) |> 
+  summarise(total.illnesses = sum(illnesses)) 
+avg.weather <- weather |> 
+  group_by(year, month, state) |> 
+  summarise(avg.meantemp = mean(tavg),
+            avg.maxtemp = mean(tmax),
+            avg.mintemp = mean(tmin),
+            avg.prcp = mean(prcp),
+            avg.snow = mean(snow),
+            avg.snowdepth = mean(snwdepth),
+            avg.lagmeantemp = mean(lagged.tavg),
+            avg.lagmintemp = mean(lagged.tmin),
+            avg.lagmaxtemp = mean(lagged.tmax), 
+            avg.lagprcp = mean(lagged.prcp), 
+            avg.lagsnow = mean(lagged.snow),
+            avg.lagsdepth = mean(lagged.sdepth))
+# joining the two data set together 
+salmonella.weather <- salmonella.illnesses |> full_join(avg.weather, by = c('year' = 'year',
+                                                 'month' = 'month',
+                                                 'state' = 'state'))
+glimpse(salmonella.weather)
+
+# creating a weather dataframe for clostridium 
+clostriduim.illnesses <- cdc |> 
+  filter(etiology == 'clostridium') |>
+  group_by(year, month, state) |> 
+  summarise(total.illnesses = sum(illnesses)) 
+# joining the two dataset together 
+clostriduim.weather <- clostriduim.illnesses |> full_join(avg.weather, by = c('year' = 'year',
+                                                 'month' = 'month',
+                                                 'state' = 'state'))
+glimpse(clostriduim.weather)
+
+# creating a weather dataframe for e. coli 
+ecoli.illnesses <- cdc |> 
+  filter(etiology == 'e. coli') |>
+  group_by(year, month, state) |> 
+  summarise(total.illnesses = sum(illnesses)) 
+# joining the two dataset together 
+ecoli.weather <- ecoli.illnesses |> full_join(avg.weather, by = c('year' = 'year',
+                                                 'month' = 'month',
+                                                 'state' = 'state'))
+glimpse(ecoli.weather)
+
+```
+
+```{r}
+# performing linear regression for each to see if any weather factors are significant
+# for entire dataset 
+cdc.lm <- lm(total.illnesses ~ ., data = cdc.weather)
+summary(cdc.lm)
+# for salmonella 
+salmonella.lm <- lm(total.illnesses ~ ., data = salmonella.weather)
+summary(salmonella.lm)
+# for clostridium
+ecoli.lm <- lm(total.illnesses ~ ., data = ecoli.weather)
+summary(ecoli.lm)
+# for shigella
+clostriduim.lm <- lm(total.illnesses ~ ., data = clostriduim.weather)
+summary(clostriduim.lm)
+```
+#Salmonella LASSO Regression Analysis
+```{r Salmonella LASSO}
+# performing LASSO regression to determine which weather variables are possibly significant 
+# filtering the data down to remove and handle NAs before perfomring LASSO regression 
+set.seed(1)
+salmonella.filter <- salmonella.weather |> filter(!is.na(total.illnesses))
+# filling in the missing average temperature 
+for (i in 1:nrow(salmonella.filter)) { 
+  if (is.na(salmonella.filter$avg.meantemp[i]) == T) { 
+    salmonella.filter$avg.meantemp[i] = mean(salmonella.filter$avg.maxtemp[i], salmonella.filter$avg.mintemp[i])}
+  if (is.na(salmonella.filter$avg.lagmeantemp[i]) == T) { 
+    salmonella.filter$avg.lagmeantemp[i] = mean(salmonella.filter$avg.lagmaxtemp[i], salmonella.filter$avg.lagmintemp[i])}
+  if (is.na(salmonella.filter$avg.snow[i]) == T) { 
+    salmonella.filter$avg.snow[i] <- 0}
+  if (is.na(salmonella.filter$avg.lagsnow[i]) == T) { 
+    salmonella.filter$avg.lagsnow[i] <- 0}
+  if (is.na(salmonella.filter$avg.snowdepth[i]) == T) {
+    salmonella.filter$avg.snowdepth[i] <- 0}
+  if (is.na(salmonella.filter$avg.lagsdepth[i]) == T) {
+    salmonella.filter$avg.lagsdepth[i] <- 0}
+}
+
+write.csv(salmonella.filter, 'salmonella_cdc_weather.csv')
+
+# creating the training and test sets 
+test <- sample(1:nrow(salmonella.filter), nrow(salmonella.filter)/4) # taking a 1/4 of the data out for testing the model 
+train <- (-test)
+salmonella.train.x <- as.matrix(salmonella.filter[train, -4])
+salmonella.train.y <- as.matrix(salmonella.filter[train, 'total.illnesses'])
+salmonella.test.x <- as.matrix(salmonella.filter[test, -4])
+salmonella.test.y <- as.matrix(salmonella.filter[test, 'total.illnesses'])
+
+# applying the LASSO model to see which variables are significant 
+salmonella.lasso.mod <- glmnet(salmonella.train.x, salmonella.train.y, alpha = 1)
+plot(salmonella.lasso.mod)
+# performing cross validation to compute test error and to perform variable selection 
+set.seed(1)
+salmonella.cv <- cv.glmnet(salmonella.train.x, salmonella.train.y, alpha = 1)
+plot(salmonella.cv)
+# getting the lambda value with the lowest MSE 
+bestlam <- salmonella.cv$lambda.min
+salmonella.lasso.pred <- predict(salmonella.lasso.mod, s = bestlam, newx = salmonella.test.x)
+mean((salmonella.lasso.pred - salmonella.test.y)^2)
+# looking at the LASSO coefficients to find the values coefficient values are 0 and thus not significant to the model prediction 
+# fitting the LASSO regression using the best lambda value to determine variable selection 
+salmonella.filter <- as.matrix(salmonella.filter)
+full.salmonella.lasso.mod <- glmnet(salmonella.filter[,-4], salmonella.filter[, 4], alpha = 1)
+salmonella.lasso.coef <- predict(full.salmonella.lasso.mod, type = 'coefficients', s = bestlam)
+salmonella.lasso.coef
+salmonella.lasso.coef[salmonella.lasso.coef != 0]
+
+```
+
+#E. Coli LASSO Regression Analysis
+```{r E. Coli LASSO}
+# performing LASSO regression to determine which weather variables are possibly significant 
+# filtering the data down to remove and handle NAs before perfomring LASSO regression 
+set.seed(1)
+ecoli.filter <- ecoli.weather |> filter(!is.na(total.illnesses))
+# filling in the missing average temperature 
+for (i in 1:nrow(ecoli.filter)) { 
+  if (is.na(ecoli.filter$avg.meantemp[i]) == T) { 
+    ecoli.filter$avg.meantemp[i] = mean(ecoli.filter$avg.maxtemp[i], ecoli.filter$avg.mintemp[i])}
+  if (is.na(ecoli.filter$avg.lagmeantemp[i]) == T) { 
+    ecoli.filter$avg.lagmeantemp[i] = mean(ecoli.filter$avg.lagmaxtemp[i], ecoli.filter$avg.lagmintemp[i])}
+  if (is.na(ecoli.filter$avg.snow[i]) == T) { 
+    ecoli.filter$avg.snow[i] <- 0}
+  if (is.na(ecoli.filter$avg.lagsnow[i]) == T) { 
+    ecoli.filter$avg.lagsnow[i] <- 0}
+  if (is.na(ecoli.filter$avg.snowdepth[i]) == T) {
+    ecoli.filter$avg.snowdepth[i] <- 0}
+  if (is.na(ecoli.filter$avg.lagsdepth[i]) == T) {
+    ecoli.filter$avg.lagsdepth[i] <- 0}
+}
+write.csv(ecoli.filter, 'ecoli_cdc_weather.csv')
+
+# creating the training and test sets 
+test <- sample(1:nrow(ecoli.filter), nrow(ecoli.filter)/4) # taking a 1/4 of the data out for testing the model 
+train <- (-test)
+ecoli.train.x <- as.matrix(ecoli.filter[train, -4])
+ecoli.train.y <- as.matrix(ecoli.filter[train, 'total.illnesses'])
+ecoli.test.x <- as.matrix(ecoli.filter[test, -4])
+ecoli.test.y <- as.matrix(ecoli.filter[test, 'total.illnesses'])
+
+# applying the LASSO model to see which variables are significant 
+ecoli.lasso.mod <- glmnet(ecoli.train.x, ecoli.train.y, alpha = 1)
+plot(ecoli.lasso.mod)
+# performing cross validation to compute test error and to perform variable selection 
+ecoli.cv <- cv.glmnet(ecoli.train.x, ecoli.train.y, alpha = 1)
+plot(ecoli.cv)
+# getting the lambda value with the lowest MSE 
+bestlam2 <- ecoli.cv$lambda.min
+ecoli.lasso.pred <- predict(ecoli.lasso.mod, s = bestlam2, newx = ecoli.test.x)
+mean((ecoli.lasso.pred - ecoli.test.y)^2)
+# looking at the LASSO coefficients to find the values coefficient values are 0 and thus not siginificant to the model prediction 
+# fitting the LASSO regression using the best lambda value to determine variable selection 
+ecoli.filter <- as.matrix(ecoli.filter)
+full.ecoli.lasso.mod <- glmnet(ecoli.filter[,-4], ecoli.filter[, 4], alpha = 1)
+ecoli.lasso.coef <- predict(full.ecoli.lasso.mod, type = 'coefficients', s = bestlam2)
+ecoli.lasso.coef
+ecoli.lasso.coef[ecoli.lasso.coef != 0]
+
+
+```
+#Clostridium LASSO Regression Analysis
+```{r Clostridium LASSO}
+# performing LASSO regression to determine which weather variables are possibly significant 
+# filtering the data down to remove and handle NAs before perfomring LASSO regression 
+set.seed(1)
+clostriduim.filter <- clostriduim.weather |> filter(!is.na(total.illnesses))
+# filling in the missing average temperature 
+for (i in 1:nrow(clostriduim.filter)) { 
+  if (is.na(clostriduim.filter$avg.meantemp[i]) == T) { 
+    clostriduim.filter$avg.meantemp[i] = mean(clostriduim.filter$avg.maxtemp[i], clostriduim.filter$avg.mintemp[i])}
+  if (is.na(clostriduim.filter$avg.lagmeantemp[i]) == T) { 
+    clostriduim.filter$avg.lagmeantemp[i] = mean(clostriduim.filter$avg.lagmaxtemp[i], clostriduim.filter$avg.lagmintemp[i])}
+  if (is.na(clostriduim.filter$avg.snow[i]) == T) { 
+    clostriduim.filter$avg.snow[i] <- 0}
+  if (is.na(clostriduim.filter$avg.lagsnow[i]) == T) { 
+    clostriduim.filter$avg.lagsnow[i] <- 0}
+  if (is.na(clostriduim.filter$avg.snowdepth[i]) == T) {
+    clostriduim.filter$avg.snowdepth[i] <- 0}
+  if (is.na(clostriduim.filter$avg.lagsdepth[i]) == T) {
+    clostriduim.filter$avg.lagsdepth[i] <- 0}
+}
+
+write.csv(clostriduim.filter, 'clostriduim_cdc_weather.csv')
+
+# creating the training and test sets 
+test <- sample(1:nrow(clostriduim.filter), nrow(clostriduim.filter)/4) # taking a 1/4 of the data out for testing the model 
+train <- (-test)
+clostriduim.train.x <- as.matrix(clostriduim.filter[train, -4])
+clostriduim.train.y <- as.matrix(clostriduim.filter[train, 'total.illnesses'])
+clostriduim.test.x <- as.matrix(clostriduim.filter[test, -4])
+clostriduim.test.y <- as.matrix(clostriduim.filter[test, 'total.illnesses'])
+
+# applying the LASSO model to see which variables are significant 
+clostriduim.lasso.mod <- glmnet(clostriduim.train.x, clostriduim.train.y, alpha = 1)
+plot(clostriduim.lasso.mod)
+# performing cross validation to compute test error and to perform variable selection 
+clostriduim.cv <- cv.glmnet(clostriduim.train.x, clostriduim.train.y, alpha = 1)
+plot(clostriduim.cv)
+# getting the lambda value with the lowest MSE 
+bestlam3 <- clostriduim.cv$lambda.min
+clostriduim.lasso.pred <- predict(clostriduim.lasso.mod, s = bestlam3, newx = clostriduim.test.x)
+mean((clostriduim.lasso.pred - clostriduim.test.y)^2)
+# looking at the LASSO coefficients to find the values coefficient values are 0 and thus not siginificant to the model prediction 
+# fitting the LASSO regression using the best lambda value to determine variable selection 
+clostriduim.filter <- as.matrix(clostriduim.filter)
+full.clostriduim.lasso.mod <- glmnet(clostriduim.filter[,-4], clostriduim.filter[, 4], alpha = 1)
+clostriduim.lasso.coef <- predict(full.clostriduim.lasso.mod, type = 'coefficients', s = bestlam3)
+clostriduim.lasso.coef
+clostriduim.lasso.coef[clostriduim.lasso.coef != 0]
+
+```
+
+```{r}
+# performing 10-fold cross validation to assess the fit and quality of the model 
+cdc.lasso.optimal <- glmnet(cdc.train.x, cdc.train.y, alpha = 1, lambda = bestlam.cdc)
+cdc.lasso.optimal.pred <- predict(cdc.lasso.optimal, newx = cdc.test.x)
+mean((cdc.lasso.optimal.pred - cdc.test.y)^2)
+
+```
+
+```{r}
+# creating a yearmon column to plot timeseries 
+cdc.weather$yearmon <- paste0(cdc.weather$year, '-', sprintf('%02d', cdc.weather$month))
+cdc.weather$yearmon <- as.yearmon(cdc.weather$yearmon)
+glimpse(cdc.weather)
+
+cdc.weather |> 
+  filter(total.illnesses <= 500) |>
+  group_by(yearmon, month) |>
+  summarise(avgillness = mean(total.illnesses)) |>
+  ggplot(aes(x = yearmon, y = avgillness, color = as.factor(month))) + 
+  geom_col() + geom_line() + facet_wrap(~month) +
+  theme(axis.text.x = element_text(angle = 90), legend.position='none') + labs(title='Average Number of Illnesses over Time for Each Month', x='Average Number of Illnesses', y='Average Number of Illnesses')
+```

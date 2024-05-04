@@ -1,0 +1,359 @@
+---
+title: "Analysis & Machine Learning - General Look at Environmental Factors"
+author: "Janessa Davis - University of Arizona"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r, include=FALSE}
+# pulling in the datasets 
+library(tidyverse)
+library(lubridate)
+library(dbscan)
+library(factoextra)
+cdc <- read_csv('cdcnors_midwest_2001-2021.csv')
+illinois <- read_csv('illinois_weather.csv')
+iowa <- read_csv('iowa_weather.csv')
+wisconsin <- read_csv('wisconsin_weather.csv')
+```
+
+```{r Cleaning and Prepping the Data for Plotting and Merging, include=FALSE}
+# taking a look at the data 
+head(cdc)
+head(illinois)
+head(iowa)
+head(wisconsin)
+# making the heads lowercase for easier coding 
+colnames(illinois) <- tolower(colnames(illinois))
+colnames(iowa) <- tolower(colnames(iowa))
+colnames(wisconsin) <- tolower(colnames(wisconsin))
+
+# splitting the date into individual columns so that the data can be round up on a monthly and yearly basis 
+illinois <- illinois |> 
+  mutate(lubridate::year(date), lubridate::month(date), lubridate::day(date))
+
+iowa <- iowa |> 
+  mutate(lubridate::year(date), lubridate::month(date), lubridate::day(date))
+
+wisconsin <- wisconsin |> 
+  mutate(lubridate::year(date), lubridate::month(date), lubridate::day(date))
+
+colnames(illinois)[8:10] <- c('year', 'month', 'week')
+colnames(iowa)[8:10] <- c('year', 'month', 'week')
+colnames(wisconsin)[8:10] <- c('year', 'month', 'week')
+
+# dropping the original date column 
+iowa <- iowa[,-1]; illinois <- illinois[, -1]; wisconsin <- wisconsin[, -1]
+# reordering the columns 
+illinois <- illinois[,c(7:9,1:6)]; iowa <- iowa[,c(7:9,1:6)]; wisconsin <- wisconsin[,c(7:9,1:6)]
+# dropping the week number column 
+illinois <- illinois[, -3]; iowa <- iowa[, -3]; wisconsin <- wisconsin[, -3]
+
+# adding a column for the state to be combined with the CDC data 
+wisconsin_state <- rep('Wisconsin', nrow(wisconsin))
+illinois_state <- rep('Illinois', nrow(illinois))
+iowa_state <- rep('Iowa', nrow(iowa))
+
+wisconsin$state <- wisconsin_state
+illinois$state <- illinois_state
+iowa$state <- iowa_state
+
+colnames(illinois) <- c('year', 'month', 'tavg', 'tmax', 'tmin', 'prcp', 'snow', 'snwdepth', 'state')
+colnames(iowa) <- c('year', 'month', 'tavg', 'tmax', 'tmin', 'prcp', 'snow', 'snwdepth', 'state')
+colnames(wisconsin) <- c('year', 'month', 'tavg', 'tmax', 'tmin', 'prcp', 'snow', 'snwdepth', 'state')
+
+```
+
+```{r}
+head(cdc)
+head(illinois)
+head(iowa)
+head(wisconsin)
+
+summary(cdc)
+summary(illinois)
+summary(iowa)
+summary(wisconsin)
+
+# all weather data 
+weather <- rbind(illinois, wisconsin, iowa)
+head(weather)
+
+```
+
+```{r}
+# taking a look at the distribution of outbreaks for each state 
+cdc |> 
+  ggplot(aes(x=state,
+             y=illnesses)) +
+  geom_boxplot() + labs(title='Distribution of Illnesses for Each State', y='Number of Illnesses') # MAJOR outliers with the number of illnesses 
+
+cdc |> 
+  filter(illnesses <= 500) |>
+  ggplot(aes(x=state,
+             y=illnesses)) +
+  geom_boxplot() + labs(title='Distribution of Illnesses less than 500 for Each State', y='Number of Illnesses') # still MAJOR outliers with the number of illnesses 
+
+# seeing the number of illnesses for each mode type 
+cdc |> 
+  ggplot(aes(x=illnesses,
+             y=hospitalizations)) +
+  geom_point()+ 
+  facet_wrap(~primary.mode) + labs(title='Relationship with Number of Illnesses and Hospitalizations', x='Number of Illnesses', y='Number of Hospitalizations')
+
+# graphing the illness against year 
+cdc |> 
+  ggplot(aes(x = as.factor(year), 
+             y = illnesses)) + 
+  geom_boxplot() + labs(title='Distribution of Illnesses by Year',x='Year',y='Number of Illnesses')
+
+cdc |> 
+  filter(illnesses <= 100) |> 
+  ggplot(aes(x = as.factor(year), 
+             y = illnesses)) + 
+  geom_boxplot() + labs(title='Distribution of Illnesses less than 100 by Year', x='Year', y='Number of Illnesses')
+
+cdc |> 
+  filter(illnesses <= 100) |> 
+  ggplot(aes(x = as.factor(year), 
+             y = illnesses)) + 
+  geom_boxplot() +
+  facet_wrap(~primary.mode) + labs(title='Distribution of Illnesses Each Year for Primary Mode of Outbreak',x='Year', y='Number of Illnesses')
+
+cdc |> 
+  filter(illnesses <= 100) |> 
+  ggplot(aes(x=primary.mode, 
+             y = illnesses)) + 
+  geom_boxplot() + labs(title='Distribution of Illnesses for Primary Outbreak Mode', x='Primary Mode', y='Number of Illnesses')
+
+cdc |> 
+  filter(illnesses <= 100) |> 
+  ggplot(aes(x=primary.mode, 
+             y = year)) + 
+  geom_boxplot() + labs(title='Distribution of Years for Each Primary Outbreak Mode', x='Primary Mode', y='Year')
+
+cdc |> 
+  ggplot(aes(x = as.factor(month), 
+             y = illnesses)) + 
+  geom_col() + 
+  facet_wrap(~primary.mode) + labs(title='Number of Illnesses by Month for Each Primary Outbreak Mode', x='Month', y='Number of Illnesses')
+# interesting that the colder months have higher counts of outbreaks for person to person but July and Aug are the primary months for water outbreaks 
+```
+
+
+```{r, include=FALSE}
+# taking a look at the correlations between variables 
+cor(illinois[,-9])
+cor(wisconsin[,-9])
+cor(iowa[,-9])
+
+# creating a combined dataframe with the cdc and weather data 
+# will need to roll up to the month, year, and state with summary of weather data and the number of illnesses 
+total.illnesses <- cdc |> 
+  group_by(year, month, state) |> 
+  summarise(total.illnesses = sum(illnesses)) 
+avg.weather <- weather |> 
+  group_by(year, month, state) |> 
+  summarise(avg.meantemp = mean(tavg),
+            avg.maxtemp = mean(tmax),
+            avg.mintemp = mean(tmin),
+            avg.prcp = mean(prcp),
+            avg.snow = mean(snow),
+            avg.snowdepth = mean(snwdepth))
+avg.weather
+# joining the two dataset together 
+cdc.weather <- total.illnesses |> full_join(avg.weather, by = c('year' = 'year',
+                                                 'month' = 'month',
+                                                 'state' = 'state'))
+head(cdc.weather)
+```
+
+```{r}
+# plotting the number of illnesses against each of the different weather values to find any notable patterns 
+cdc.weather |> ggplot(aes(x=total.illnesses, y=avg.meantemp, color = state)) + geom_point() + labs(title='Number of Illnesses vs. Average Mean Temperature by State', x='Number of Illnesses', y='Average Mean Temp (˚F)', color='State')
+cdc.weather |> ggplot(aes(x=total.illnesses, y=avg.maxtemp, color = state)) + geom_point() + labs(title='Number of Illnesses vs. Average Max Temperature by State', x='Number of Illnesses', y='Average Max Temp (˚F)', color='State')
+cdc.weather |> ggplot(aes(x=total.illnesses, y=avg.mintemp, color = state)) + geom_point() + labs(title='Number of Illnesses vs. Average Minimum Temperature by State', x='Number of Illnesses', y='Average Min Temp (˚F)', color='State')
+cdc.weather |> ggplot(aes(x=total.illnesses, y=avg.prcp, color = state)) + geom_point() + labs(title='Number of Illnesses vs. Average Precipitation in Inches by State', x='Number of Illnesses', y='Average Precipitation (in)', color='State')
+cdc.weather |> ggplot(aes(x=total.illnesses, y=avg.snow, color = state)) + geom_point() + labs(title='Number of Illnesses vs. Average Snowfall in Inches by State', x='Number of Illnesses', y='Average Snowfall (in)', color='State')
+cdc.weather |> ggplot(aes(x=total.illnesses, y=avg.snowdepth, color = state)) + geom_point() + labs(title='Number of Illnesses vs. Average Snow Depth in Inches by State', x='Number of Illnesses', y='Average Snow Depth (in)', color='State')
+
+cdc.weather |> filter(total.illnesses <= 100) |> ggplot(aes(x=total.illnesses, y=avg.meantemp, color = state)) + geom_point() + labs(title='Number of Illnesses less than 100 vs. Average Mean Temperature by State', x='Number of Illnesses', y='Average Mean Temp (˚F)', color='State')
+cdc.weather |> filter(total.illnesses <= 100) |> ggplot(aes(x=total.illnesses, y=avg.maxtemp, color = state)) + geom_point() + labs(title='Number of Illnesses less than 100 vs. Average Max Temperature by State', x='Number of Illnesses', y='Average Max Temp (˚F)', color='State')
+cdc.weather |> filter(total.illnesses <= 100) |> ggplot(aes(x=total.illnesses, y=avg.mintemp, color = state)) + geom_point() + labs(title='Number of Illnesses less than 100 vs. Average Minimum Temperature by State', x='Number of Illnesses', y='Average Min Temp (˚F)', color='State')
+cdc.weather |> filter(total.illnesses <= 100) |> ggplot(aes(x=total.illnesses, y=avg.prcp, color = state)) + geom_point() + labs(title='Number of Illnesses less than 100 vs. Average Precipitation in Inches by State', x='Number of Illnesses', y='Average Precipitation (in)', color='State')
+cdc.weather |> filter(total.illnesses <= 100) |> ggplot(aes(x=total.illnesses, y=avg.snow, color = state)) + geom_point() + labs(title='Number of Illnesses less than 100 vs. Average Snowfall in Inches by State', x='Number of Illnesses', y='Average Snowfall (in)', color='State')
+cdc.weather |> filter(total.illnesses <= 100) |> ggplot(aes(x=total.illnesses, y=avg.snowdepth, color = state)) + geom_point() + labs(title='Number of Illnesses less than 100 vs. Average Snow Depth in Inches by State', x='Number of Illnesses', y='Average Snow Depth (in)', color='State')
+# boxplot of months and illnesses
+cdc.weather |> ggplot(aes(x=as.factor(month), y=total.illnesses)) + geom_boxplot() + facet_wrap(~state) + labs(title='Distribution of Number of Illnesses by Month for Each State', x='Month', y='Number of Illnesses')
+```
+
+```{r}
+# running a linear regression to see which of the variables are significant 
+lm.full <- lm(total.illnesses ~ ., data=cdc.weather)
+summary(lm.full)
+lm.reduced1 <- lm(total.illnesses ~ state + avg.meantemp, data = cdc.weather)
+summary(lm.reduced1)
+lm.reduced2 <- lm(total.illnesses ~ state + avg.prcp, data = cdc.weather)
+summary(lm.reduced2)
+lm.reduced3 <- lm(total.illnesses ~ state + avg.mintemp + avg.prcp, data = cdc.weather)
+summary(lm.reduced3)
+
+```
+
+```{r}
+# applying clustering methods 
+# applying k-mean clustering using the elbow technique to find the best k value 
+# scaling the data 
+scaled.cdc.weather <- cbind(cdc.weather[,1:3], scale(cdc.weather[,-c(1:3)]))
+glimpse(scaled.cdc.weather)
+scaled.meantemp <- scaled.cdc.weather[, c('total.illnesses', 'avg.meantemp')]
+scaled.meantemp <- na.omit(scaled.meantemp)
+glimpse(scaled.meantemp)
+# applying k-mean clustering with k = 5 to the mean temperature 
+scaled.kmeans1 <- kmeans(scaled.meantemp, centers = 5, nstart = 20)
+kmeans1.clusters <- factor(scaled.kmeans1$cluster)
+scaled.meantemp$clusters <- kmeans1.clusters
+
+ggplot(scaled.meantemp, aes(x = total.illnesses, y = avg.meantemp, color = clusters)) + geom_point() + labs(title='K=5 K-Means Clustering of Total Illnesses vs. Average Mean Temperature', x='Number of Illnesses', y='Average Mean Temperature (˚F)')
+print(scaled.kmeans1$withinss) # fairly high clustering variances so going to use elbow method to figure out the best k value for the data that minimizes the variance of the data set 
+
+# applying the elbow method to determine the best k value 
+meantemp_kmeans <- data.frame(matrix(ncol = 2, nrow = 15))
+colnames(meantemp_kmeans) <- c('k', 'wi_ss')
+for(i in 1:15){ #running from k = 1 to k = 15
+  km <- kmeans(scaled.meantemp, centers = i)
+  wi_ss <- round(km$tot.withinss, 3)
+  meantemp_kmeans[i, 'k'] <- i
+  meantemp_kmeans[i, 'wi_ss'] <- wi_ss
+}
+meantemp_kmeans |> ggplot(aes(x=k, y=wi_ss)) + geom_line() + geom_point() + labs(title='K-Means Clustering Elbow Method for Number of Illnesses vs. Average Mean Temperature', y='Within Sum of Squares') # k = 14 seems to yield the lowest sum of squares values 
+
+# applying k-mean clustering with k = 5 to the mean temperature 
+scaled.kmeans1 <- kmeans(scaled.meantemp, centers = 14, nstart = 20)
+kmeans1.clusters <- factor(scaled.kmeans1$cluster)
+scaled.meantemp$clusters <- kmeans1.clusters
+
+ggplot(scaled.meantemp, aes(x = total.illnesses, y = avg.meantemp, color = clusters)) + geom_point() + labs(title='K=14 K-Means Clustering of Total Illnesses vs. Average Mean Temperature', x='Number of Illnesses', y='Average Mean Temperature (˚F)')
+```
+
+```{r}
+# applying k means clustering to precipitation, snow, snowdepth to see if weather anamolies cause patterns with the number of illnesses seen with an outbreak 
+
+# applying the kmeans elbow method to the precipitation variable 
+scaled.prcp <- scaled.cdc.weather[, c('total.illnesses', 'avg.prcp')]
+scaled.prcp <- na.omit(scaled.prcp)
+glimpse(scaled.prcp)
+
+prcp_kmeans <- data.frame(matrix(ncol = 2, nrow = 20))
+colnames(prcp_kmeans) <- c('k', 'wi_ss')
+for(i in 1:20){ #running from k = 1 to k = 20
+  km <- kmeans(scaled.prcp, centers = i)
+  wi_ss <- round(km$tot.withinss, 3)
+  prcp_kmeans[i, 'k'] <- i
+  prcp_kmeans[i, 'wi_ss'] <- wi_ss
+}
+prcp_kmeans |> ggplot(aes(x=k, y=wi_ss)) + geom_line() + geom_point() + labs(title='K-Means Clustering Elbow Method for Number of Illnesses vs. Average Precipitation', y='Within Sum of Squares')
+
+scaled.kmeans2 <- kmeans(scaled.prcp, centers = 17)
+kmeans2.clusters <- factor(scaled.kmeans2$cluster)
+scaled.prcp$clusters <- kmeans2.clusters
+
+ggplot(scaled.prcp, aes(x = total.illnesses, y = avg.prcp, color = clusters)) + geom_point() + labs(title='K=17 K-Means Clustering of Total Illnesses vs. Average Precipitation ', x='Number of Illnesses', y='Precipitation (in)')
+
+```
+
+```{r}
+# applying the kmeans elbow method to the max temp variable 
+scaled.maxtemp <- scaled.cdc.weather[, c('total.illnesses', 'avg.maxtemp')]
+scaled.maxtemp <- na.omit(scaled.maxtemp)
+#glimpse(scaled.maxtemp)
+
+maxtemp_kmeans <- data.frame(matrix(ncol = 2, nrow = 20))
+colnames(maxtemp_kmeans) <- c('k', 'wi_ss')
+for(i in 1:15){ #running from k = 1 to k = 15
+  km <- kmeans(scaled.maxtemp, centers = i)
+  wi_ss <- round(km$tot.withinss, 3)
+  maxtemp_kmeans[i, 'k'] <- i
+  maxtemp_kmeans[i, 'wi_ss'] <- wi_ss
+}
+maxtemp_kmeans |> ggplot(aes(x=k, y=wi_ss)) + geom_line() + geom_point() + labs(title='K-Means Clustering Elbow Method for Number of Illnesses vs. Average Maximum Temperature', y='Within Sum of Squares')
+
+scaled.kmeans3 <- kmeans(scaled.maxtemp, centers = 14)
+kmeans3.clusters <- factor(scaled.kmeans3$cluster)
+scaled.maxtemp$clusters <- kmeans3.clusters
+
+ggplot(scaled.maxtemp, aes(x = total.illnesses, y = avg.maxtemp, color = clusters)) + geom_point() + labs(title='K=14 K-Means Clustering of Total Illnesses vs. Average Maximum Temperature ', x='Number of Illnesses', y='Average Maximum Temperature (˚F)')
+
+```
+
+```{r}
+# applying the kmeans elbow method to the min temp variable 
+scaled.mintmep <- scaled.cdc.weather[, c('total.illnesses', 'avg.mintemp')]
+scaled.mintmep <- na.omit(scaled.mintmep)
+#glimpse(scaled.mintmep)
+
+mintemp_kmeans <- data.frame(matrix(ncol = 2, nrow = 20))
+colnames(mintemp_kmeans) <- c('k', 'wi_ss')
+for(i in 1:15){ #running from k = 1 to k = 15
+  km <- kmeans(scaled.mintmep, centers = i)
+  wi_ss <- round(km$tot.withinss, 3)
+  mintemp_kmeans[i, 'k'] <- i
+  mintemp_kmeans[i, 'wi_ss'] <- wi_ss
+}
+mintemp_kmeans |> ggplot(aes(x=k, y=wi_ss)) + geom_line() + geom_point() + labs(title='K-Means Clustering Elbow Method for Number of Illnesses vs. Average Minimum Temperature', y='Within Sum of Squares')  # 14 clusters seems to offer the lowest total sum of squares
+
+scaled.kmeans4 <- kmeans(scaled.mintmep, centers = 14)
+kmeans4.clusters <- factor(scaled.kmeans4$cluster)
+scaled.mintmep$clusters <- kmeans4.clusters
+
+ggplot(scaled.mintmep, aes(x = total.illnesses, y = avg.mintemp, color = clusters)) + geom_point() + labs(title='K=14 K-Means Clustering of Total Illnesses vs. Average Minimum Temperature ', x='Number of Illnesses', y='Average Minimum Temperature (˚F)')
+
+```
+
+```{r}
+# applying the kmeans elbow method to the snow variable 
+scaled.snow <- scaled.cdc.weather[, c('total.illnesses', 'avg.snow')]
+scaled.snow <- na.omit(scaled.snow)
+#glimpse(scaled.snow)
+
+snow_kmeans <- data.frame(matrix(ncol = 2, nrow = 20))
+colnames(prcp_kmeans) <- c('k', 'wi_ss')
+for(i in 1:20){ #running from k = 1 to k = 15
+  km <- kmeans(scaled.snow, centers = i)
+  wi_ss <- round(km$tot.withinss, 3)
+  snow_kmeans[i, 'k'] <- i
+  snow_kmeans[i, 'wi_ss'] <- wi_ss
+}
+snow_kmeans |> ggplot(aes(x=k, y=wi_ss)) + geom_line() + geom_point() + labs(title='K-Means Clustering Elbow Method for Number of Illnesses vs. Average Snowfall in Inches', y='Within Sum of Squares') # 18 clusters seems to offer the lowest total sum of squares 
+
+scaled.kmeans5 <- kmeans(scaled.snow, centers = 18)
+kmeans5.clusters <- factor(scaled.kmeans5$cluster)
+scaled.snow$clusters <- kmeans5.clusters
+
+ggplot(scaled.snow, aes(x = total.illnesses, y = avg.snow, color = clusters)) + geom_point() + labs(title='K=18 K-Means Clustering of Total Illnesses vs. Average Snowfall in Inches', x='Number of Illnesses', y='Average Snowfall (in)')
+
+```
+
+```{r}
+# applying the kmeans elbow method to the snow depth variable 
+scaled.snowdepth <- scaled.cdc.weather[, c('total.illnesses', 'avg.snowdepth')]
+scaled.snowdepth <- na.omit(scaled.snowdepth)
+#glimpse(scaled.snowdepth)
+
+snowdepth_kmeans <- data.frame(matrix(ncol = 2, nrow = 20))
+colnames(snowdepth_kmeans) <- c('k', 'wi_ss')
+for(i in 1:20){ #running from k = 1 to k = 20
+  km <- kmeans(scaled.snowdepth, centers = i)
+  wi_ss <- round(km$tot.withinss, 3)
+  snowdepth_kmeans[i, 'k'] <- i
+  snowdepth_kmeans[i, 'wi_ss'] <- wi_ss
+}
+snowdepth_kmeans |> ggplot(aes(x=k, y=wi_ss)) + geom_line() + geom_point() + labs(title='K-Means Clustering Elbow Method for Number of Illnesses vs. Average Snow Depth in Inches', y='Within Sum of Squares') # 20 clusters offers the lowest total sum of squares value
+
+scaled.kmeans6 <- kmeans(scaled.snowdepth, centers = 20)
+kmeans6.clusters <- factor(scaled.kmeans6$cluster)
+scaled.snowdepth$clusters <- kmeans6.clusters
+
+ggplot(scaled.snowdepth, aes(x = total.illnesses, y = avg.snowdepth, color = clusters)) + geom_point() + labs(title='K=20 K-Means Clustering of Total Illnesses vs. Average Snowfall in Inches', x='Number of Illnesses', y='Average Snow Depth (in)')
+
+```

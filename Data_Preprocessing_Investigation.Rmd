@@ -1,0 +1,190 @@
+---
+title: "Intial Data Investigation"
+author: "Janessa Davis - University of Arizona"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r Inital Investigation}
+# loading in the data cdc data 
+library(tidyverse)
+cdc <- read_csv('cdcnors_2001-2021.csv')
+# first glance at the data 
+head(cdc)
+dim(cdc)
+colnames(cdc)
+glimpse(cdc)
+
+summary(cdc)
+
+# changing the column names to be lowercase and no spaces 
+cdc <- cdc |> rename_all(make.names)
+cdc.columns <- tolower(colnames(cdc))
+colnames(cdc) <- cdc.columns
+head(cdc)
+
+```
+
+```{r}
+head(cdc)
+# seeing the number of outbreaks logged for each state to determine which regions to look at 
+cdc |> 
+  group_by(state) |> 
+  count(state) |> 
+  arrange(desc(n))
+# seeing the number of NAs for food vehicle 
+sum(is.na(cdc$food.vehicle))
+sum(is.na(cdc$food.contaminated.ingredient))
+# seeing the food vehicles 
+cdc |> 
+  group_by(food.vehicle) |> 
+  count(food.vehicle) |> 
+  arrange(desc(n))
+# seeing the number of each type of outbreak
+cdc |> 
+  group_by(primary.mode) |> 
+  count(primary.mode) |> 
+  arrange(desc(n))
+
+cdc |> 
+  group_by(state, primary.mode) |> 
+  count(state, primary.mode) |> 
+  arrange(desc(n))
+
+# selecting the rows for Wisconsin, Illinois, Ohio 
+cdc |> 
+  filter(state %in% c('Wisconsin', 'Illinois', 'Iowa')) |>
+  group_by(state, primary.mode) |> 
+  count(state, primary.mode) |> 
+  arrange(desc(n))
+```
+
+
+```{r}
+# filtering the dataset for the 3 states we're looking at for analysis 
+cdc.midwest <- cdc |> 
+  filter(state %in% c('Wisconsin', 'Illinois', 'Iowa'))
+head(cdc.midwest)
+
+# separating the entries that are separated by a semi-colon into individual rows for each of the possibly entries listed in a single data block 
+# etiology, etiology.status, serotype.or.genotype, setting have this issue 
+
+# separating the etiology and etiology status into individual rows, the entries were match up with each other
+cdc.midwest <-cdc.midwest |> 
+  separate_rows(etiology, etiology.status, sep = ';')
+cdc.midwest 
+
+cdc.midwest$etiology <- tolower(cdc.midwest$etiology)
+cdc.midwest$etiology.status <- tolower(cdc.midwest$etiology.status)
+
+cdc.midwest |> 
+  group_by(setting) |> 
+  count(setting) |> 
+  arrange(desc(n))
+
+cdc.midwest |> 
+  group_by(etiology) |> 
+  count(etiology) |> 
+  arrange(desc(n))
+
+cdc.midwest |> 
+  group_by(ifsac.category) |> 
+  count(ifsac.category) |> 
+  arrange(desc(n))
+
+# separating the food vehicle and water type into individual rows
+# talk this transformation over the with group 
+cdc.midwest |> 
+  separate_rows(food.vehicle, sep = ';')
+
+cdc.midwest 
+
+# dropping the columns that we do not need 
+# talk with group to determine with columns to drop 
+cdc.midwest <- cdc.midwest |> 
+  select(-c(animal.type, animal.type.specify, info.on.hospitalizations, info.on.deaths))
+
+cdc.midwest |> 
+  filter(primary.mode %in% c('Food', 'Water'))
+
+cdc.midwest |> 
+  filter(grepl('norovirus', etiology)) |> 
+  group_by(primary.mode, etiology) |> 
+  count(primary.mode, etiology) |> arrange(desc(n))
+
+# filtering the data set to remove the the norovirus rows 
+cdc.midwest <- cdc.midwest |> 
+  filter(!grepl('norovirus', etiology))
+cdc.midwest
+
+cdc.midwest |> count(etiology) |> arrange(desc(n))
+
+# reformatting the bacteria names for readability and interpretability 
+for (i in 1:length(cdc.midwest$etiology)) {
+  if (grepl('salmonella', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'salmonella'
+  }
+  else if (grepl('campylobacter', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'campylobacter'
+  }
+  else if (grepl('shigella', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'shigella'
+  }
+  else if (grepl('clostridium', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'clostridium'
+  }
+  else if (grepl('cryptosporidium', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'cryptosporidium'
+  }
+  else if (grepl('bacillus', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'bacillus'
+  }
+  else if (grepl('escherichia coli', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'e. coli'
+  }
+  else if (grepl('sapovirus', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'sapovirus'
+  }
+  else if (grepl('cyclospora', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'cyclospora'
+  }
+  else if (grepl('clostridium', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'clostridium'
+  }
+  else if (grepl('pseudomonas', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'pseudomonas'
+  }
+  else if (grepl('staphylococcus', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'staphylococcus'
+  }
+  else if (grepl('legionella', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'legionella'
+  }
+  else if (grepl('listeria', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'listeria'
+  }
+  else if (grepl('vibrio', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'vibrio'
+  }
+  else if (grepl('trichinella', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'trichinella'
+  }
+  else if (grepl('toxoplasma', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'toxoplasma'
+  }
+  else if (grepl('yersinia', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'yersinia'
+  }
+  else if (grepl('adenovirus', cdc.midwest$etiology[i]) == TRUE) { 
+    cdc.midwest[i, 'etiology'] <- 'adenovirus'
+  }
+}
+cdc.midwest
+cdc.midwest |> count(etiology) |> arrange(desc(n))
+```
+
+```{r}
+# exporting the dataset 
+write_csv(cdc.midwest, 'cdcnors_midwest_2001-2021.csv')
+
+```
